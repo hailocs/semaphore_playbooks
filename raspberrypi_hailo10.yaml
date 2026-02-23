@@ -158,6 +158,6 @@
         ./run_tests.sh {{ test_flag }} {{ download_flag }}
       args:
         executable: /bin/bash
-      async: 7200
+      async: 28800   # 8 hours
       poll: 30
 
