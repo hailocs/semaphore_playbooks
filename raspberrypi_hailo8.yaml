@@ -4,23 +4,54 @@
   become: true
 
   vars:
-    repo_url: "https://github.com/nadaved1/hailo-apps-internal.git"
+    # ---------------------
+    # Repo settings
+    # ---------------------
+    repo_url: "https://github.com/hailocs/hailo-apps-internal.git"
     repo_dest: "/tmp/hailo-apps-internal"
     branch: "main"
-    test_arg: ""
 
+    # ---------------------
+    # Test selection from Semaphore:
+    #
+    # Options:
+    #   sanity
+    #   install
+    #   pipelines
+    #   full    (default → run all tests)
+    # ---------------------
+    test_type: "full"
+
+    # The user that will own all files & run install/tests
     run_user: "{{ ansible_user | default('semaphore') }}"
     run_group: "{{ ansible_user | default('semaphore') }}"
 
   pre_tasks:
+    # Verify we're running as root (Ansible's become)
     - name: Verify effective user (should be 0)
-      command: id -u
+      ansible.builtin.command: id -u
       register: idu
       changed_when: false
 
     - name: Debug user
-      debug:
+      ansible.builtin.debug:
         msg: "Effective UID: {{ idu.stdout }}"
+
+    # Ensure test_type is valid
+    - name: Validate test_type
+      ansible.builtin.assert:
+        that:
+          - test_type in ['sanity', 'install', 'full', 'pipelines']
+        fail_msg: "Invalid test_type '{{ test_type }}'. Use sanity | install | full | pipelines."
+
+    # Map UI test_type → script flags
+    - name: Map test_type to script flag
+      ansible.builtin.set_fact:
+        test_flag: >-
+          {% if test_type == 'sanity' %}--sanity
+          {% elif test_type == 'install' %}--install
+          {% elif test_type == 'pipelines' %}--pipelines
+          {% else %}{% endif %}
 
   tasks:
     # ---------------------
@@ -33,19 +64,13 @@
         cache_valid_time: 3600
       when: ansible_os_family == "Debian"
 
-    - name: Update & upgrade packages (RedHat)
-      ansible.builtin.yum:
-        name: "*"
-        state: latest
-      when: ansible_os_family == "RedHat"
-
     - name: Remove unneeded packages (Debian/Ubuntu)
       ansible.builtin.apt:
         autoremove: yes
       when: ansible_os_family == "Debian"
 
     - name: Install dependencies
-      package:
+      ansible.builtin.package:
         name:
           - curl
           - hailo-all
@@ -56,10 +81,9 @@
         state: present
 
     # ---------------------
-    # Clone as run_user
+    # Clone repo as real user
     # ---------------------
-    - name: Clone the hailo-apps-internal repo as run_user
-      become: true
+    - name: Clone hailo-apps-internal as run_user
       become_user: "{{ run_user }}"
       ansible.builtin.git:
         repo: "{{ repo_url }}"
@@ -67,11 +91,7 @@
         version: "{{ branch }}"
         force: yes
 
-    # ---------------------
-    # Ensure ownership
-    # ---------------------
     - name: Ensure repo directory ownership is correct
-      become: true
       ansible.builtin.file:
         path: "{{ repo_dest }}"
         owner: "{{ run_user }}"
@@ -80,10 +100,9 @@
         state: directory
 
     # ---------------------
-    # Install script
+    # Install hailo-apps
     # ---------------------
     - name: Run installation script as run_user
-      become: true
       become_user: "{{ run_user }}"
       ansible.builtin.shell: |
         cd {{ repo_dest }}
@@ -95,11 +114,10 @@
     # Run tests
     # ---------------------
     - name: Run tests as run_user
-      become: true
       become_user: "{{ run_user }}"
       ansible.builtin.shell: |
         cd {{ repo_dest }}
         source venv_hailo_apps/bin/activate
-        ./run_tests.sh --pipelines
+        ./run_tests.sh{{ " " + test_flag if test_flag | length > 0 else "" }}
       args:
         executable: /bin/bash
