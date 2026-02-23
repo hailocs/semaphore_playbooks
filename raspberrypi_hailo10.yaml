@@ -1,0 +1,163 @@
+---
+- name: Hailo-8 Raspberry Pi Installation & Test Runner
+  hosts: all
+  become: true
+
+  vars:
+    # ---------------------
+    # Repo settings
+    # ---------------------
+    repo_url: "https://github.com/hailocs/hailo-apps-internal.git"
+    repo_dest: "/tmp/hailo-apps-internal"
+    branch: "main"
+
+    # ---------------------
+    # Test selection from Semaphore UI
+    # Options:
+    #   - full
+    #   - sanity
+    #   - install
+    #   - pipelines
+    # ---------------------
+    test_type: "full"
+
+    # ---------------------
+    # Resource downloading control
+    # Options:
+    #   - true  (default)
+    #   - false (adds --no-download)
+    # ---------------------
+    download_resources: true
+
+    # ---------------------
+    # User who will own repo, venv, and run tests
+    # Usually "semaphore" on Semaphore CI
+    # ---------------------
+    run_user: "{{ ansible_user | default('semaphore') }}"
+    run_group: "{{ ansible_user | default('semaphore') }}"
+
+  pre_tasks:
+    # ---------------------------------------------------
+    # Diagnostics
+    # ---------------------------------------------------
+    - name: Verify effective user (should be 0)
+      ansible.builtin.command: id -u
+      register: idu
+      changed_when: false
+
+    - name: Debug user
+      ansible.builtin.debug:
+        msg: "Effective UID: {{ idu.stdout }}"
+
+    # ---------------------------------------------------
+    # Validate test_type
+    # ---------------------------------------------------
+    - name: Validate test_type
+      ansible.builtin.assert:
+        that:
+          - test_type in ['sanity', 'install', 'full', 'pipelines']
+        fail_msg: >
+          Invalid test_type '{{ test_type }}'.
+          Must be one of: sanity | install | full | pipelines.
+
+    # ---------------------------------------------------
+    # Map test_type → CLI flag
+    # ---------------------------------------------------
+    - name: Map test_type to flag
+      ansible.builtin.set_fact:
+        test_flag: >-
+          {% if test_type == 'sanity' %}--sanity
+          {% elif test_type == 'install' %}--install
+          {% elif test_type == 'pipelines' %}--pipelines
+          {% else %}{% endif %}
+
+    # ---------------------------------------------------
+    # Map download_resources → CLI flag
+    # ---------------------------------------------------
+    - name: Map download_resources to flag
+      ansible.builtin.set_fact:
+        download_flag: "{% if not download_resources %}--no-download{% else %}{% endif %}"
+
+  tasks:
+    # ---------------------------------------------------
+    # System dependencies
+    # ---------------------------------------------------
+    - name: Update apt cache (Debian/Ubuntu)
+      ansible.builtin.apt:
+        update_cache: yes
+        upgrade: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Remove unneeded packages (Debian/Ubuntu)
+      ansible.builtin.apt:
+        autoremove: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install dependencies
+      ansible.builtin.package:
+        name:
+          - curl
+          - hailo-all
+          - git
+          - python3
+          - python3-pip
+          - python3-venv
+        state: present
+
+    # ---------------------------------------------------
+    # Clone hailo-apps-internal repo as run_user
+    # ---------------------------------------------------
+    - name: Clone hailo-apps-internal as run_user
+      become_user: "{{ run_user }}"
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_dest }}"
+        version: "{{ branch }}"
+        force: yes
+
+    - name: Ensure repo directory ownership
+      ansible.builtin.file:
+        path: "{{ repo_dest }}"
+        owner: "{{ run_user }}"
+        group: "{{ run_group }}"
+        recurse: true
+        state: directory
+    # ---------------------------------------------------
+    # Set MODEL_ZOO_ROOT for HEF resource downloads
+    # ---------------------------------------------------
+
+    - name: Configure MODEL_ZOO_ROOT for Hailo apps
+      become_user: "{{ run_user }}"
+      shell: |
+        MODEL_ZOO_ROOT="/home/{{ run_user }}/.cache/hailo"
+        mkdir -p "$MODEL_ZOO_ROOT"
+        echo 'export MODEL_ZOO_ROOT="/home/{{ run_user }}/.cache/hailo"' >> /home/{{ run_user }}/.bashrc
+      args:
+        executable: /bin/bash
+
+    # ---------------------------------------------------
+    # Run internal install script
+    # ---------------------------------------------------
+    - name: Run installation script as run_user
+      become_user: "{{ run_user }}"
+      ansible.builtin.shell: |
+        cd {{ repo_dest }}
+        ./install.sh
+      args:
+        executable: /bin/bash
+
+    # ---------------------------------------------------
+    # Run tests
+    # ---------------------------------------------------
+    - name: Run tests as run_user (async)
+      become_user: "{{ run_user }}"
+      shell: |
+        cd {{ repo_dest }}
+        source venv_hailo_apps/bin/activate
+        ./run_tests.sh {{ test_flag }} {{ download_flag }}
+      args:
+        executable: /bin/bash
+      async: 7200
+      poll: 30
+

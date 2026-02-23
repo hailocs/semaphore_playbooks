@@ -18,10 +18,10 @@
     repo_url: "https://github.com/hailocs/hailo-apps-internal.git"
     repo_dest: "/tmp/hailo-apps-internal"
     branch: "main"
+    venv_path: "{{ repo_dest }}/venv_hailo_apps"
 
     # ---------------------
-    # Test selection from CI
-    # Passed directly to run_tests.sh
+    # Test selection
     # ---------------------
     test_type: ""
 
@@ -203,14 +203,8 @@
         - "{{ tappas_core_pkg | default(omit) }}"
       when: ansible_os_family == "Debian"
 
-    - name: Install Python wheel
-      ansible.builtin.pip:
-        name: "{{ download_path }}/{{ target_whl }}"
-        state: present
-        executable: pip3
-
     # ---------------------------------------------------
-    # Clone + Install hailo-apps-internal
+    # Clone + Install hailo-apps-internal (creates venv_hailo_apps)
     # ---------------------------------------------------
     - name: Clone hailo-apps-internal
       ansible.builtin.git:
@@ -219,20 +213,40 @@
         version: "{{ branch }}"
         force: yes
 
-    - name: Run install.sh
+    - name: Run install.sh (creates {{ venv_path }})
       ansible.builtin.shell: |
+        set -euo pipefail
         cd {{ repo_dest }}
         ./install.sh
       args:
         executable: /bin/bash
 
     # ---------------------------------------------------
-    # Run tests
+    # Install Hailo Python wheel INSIDE the repo venv (PEP 668-safe)
+    # ---------------------------------------------------
+    - name: Ensure pip is up-to-date in repo venv
+      ansible.builtin.pip:
+        name:
+          - pip
+          - setuptools
+          - wheel
+        state: latest
+        executable: "{{ venv_path }}/bin/pip"
+
+    - name: Install Hailo wheel inside repo venv
+      ansible.builtin.pip:
+        name: "{{ download_path }}/{{ target_whl }}"
+        state: present
+        executable: "{{ venv_path }}/bin/pip"
+
+    # ---------------------------------------------------
+    # Run tests using the same venv
     # ---------------------------------------------------
     - name: Run tests (async)
       ansible.builtin.shell: |
+        set -euo pipefail
         cd {{ repo_dest }}
-        source venv_hailo_apps/bin/activate
+        source "{{ venv_path }}/bin/activate"
         ./run_tests.sh {{ test_type }} {{ download_flag }}
       args:
         executable: /bin/bash
