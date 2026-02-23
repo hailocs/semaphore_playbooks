@@ -5,6 +5,11 @@
   vars:
 
     # ---------------------
+    # CI user that owns the repo and runs install/tests
+    # ---------------------
+    run_user: "semaphore"
+
+    # ---------------------
     # Resource downloading control
     # Options:
     #   - true  (default)
@@ -21,7 +26,8 @@
     venv_path: "{{ repo_dest }}/venv_hailo_apps"
 
     # ---------------------
-    # Test selection
+    # Test selection (passed to run_tests.sh)
+    # Examples: "", "--sanity", "--install", "--pipelines"
     # ---------------------
     test_type: ""
 
@@ -104,7 +110,7 @@
       when: ansible_distribution == "Ubuntu"
 
     # ---------------------------------------------------
-    # Map download_resources → CLI flag
+    # Map download_resources → CLI flag for run_tests.sh
     # ---------------------------------------------------
     - name: Map download_resources to flag
       ansible.builtin.set_fact:
@@ -124,6 +130,7 @@
           - "Download flag: '{{ download_flag }}'"
           - "Target wheel: {{ target_whl }}"
           - "tappas-core pkg (Ubuntu only): {{ tappas_core_pkg | default('N/A') }}"
+          - "Run user: {{ run_user }}"
 
   tasks:
 
@@ -191,29 +198,37 @@
       when: ansible_distribution == "Ubuntu"
 
     # ---------------------------------------------------
-    # Install Hailo packages (Debian/Ubuntu)
+    # Clone as the CI user and ensure ownership
     # ---------------------------------------------------
-    - name: Install .deb packages (order matters)
-      ansible.builtin.apt:
-        deb: "{{ download_path }}/{{ item }}"
-        state: present
-      loop:
-        - "hailort-pcie-driver_{{ hrt_ver }}_all.deb"
-        - "hailort_{{ hrt_ver }}_amd64.deb"
-        - "{{ tappas_core_pkg | default(omit) }}"
-      when: ansible_os_family == "Debian"
+    - name: Ensure parent of repo_dest exists and is owned by run_user
+      ansible.builtin.file:
+        path: "{{ repo_dest | dirname }}"
+        state: directory
+        owner: "{{ run_user }}"
+        group: "{{ run_user }}"
+        mode: '0755'
 
-    # ---------------------------------------------------
-    # Clone + Install hailo-apps-internal (creates venv_hailo_apps)
-    # ---------------------------------------------------
-    - name: Clone hailo-apps-internal
+    - name: Clone hailo-apps-internal as run_user
+      become_user: "{{ run_user }}"
       ansible.builtin.git:
         repo: "{{ repo_url }}"
         dest: "{{ repo_dest }}"
         version: "{{ branch }}"
         force: yes
 
-    - name: Run install.sh (creates {{ venv_path }})
+    - name: Ensure repo tree is owned by run_user (idempotent guard)
+      ansible.builtin.file:
+        path: "{{ repo_dest }}"
+        state: directory
+        recurse: true
+        owner: "{{ run_user }}"
+        group: "{{ run_user }}"
+
+    # ---------------------------------------------------
+    # Run install.sh as the CI user (creates venv_hailo_apps)
+    # ---------------------------------------------------
+    - name: Run install.sh (creates {{ venv_path }}) as run_user
+      become_user: "{{ run_user }}"
       ansible.builtin.shell: |
         set -euo pipefail
         cd {{ repo_dest }}
@@ -224,7 +239,8 @@
     # ---------------------------------------------------
     # Install Hailo Python wheel INSIDE the repo venv (PEP 668-safe)
     # ---------------------------------------------------
-    - name: Ensure pip is up-to-date in repo venv
+    - name: Ensure pip/setuptools/wheel are up-to-date in repo venv
+      become_user: "{{ run_user }}"
       ansible.builtin.pip:
         name:
           - pip
@@ -234,15 +250,17 @@
         executable: "{{ venv_path }}/bin/pip"
 
     - name: Install Hailo wheel inside repo venv
+      become_user: "{{ run_user }}"
       ansible.builtin.pip:
         name: "{{ download_path }}/{{ target_whl }}"
         state: present
         executable: "{{ venv_path }}/bin/pip"
 
     # ---------------------------------------------------
-    # Run tests using the same venv
+    # Run tests using the same venv and same user
     # ---------------------------------------------------
-    - name: Run tests (async)
+    - name: Run tests (async) as run_user
+      become_user: "{{ run_user }}"
       ansible.builtin.shell: |
         set -euo pipefail
         cd {{ repo_dest }}
