@@ -1,19 +1,38 @@
----
-- name: Basic Installation
+- name: Hailo-8 x86 Installation & Test Runner
   hosts: all
   become: true
 
   vars:
+
+    # ---------------------
+    # Resource downloading control
+    # Options:
+    #   - true  (default)
+    #   - false (adds --no-download)
+    # ---------------------
+    download_resources: true
+
+    # ---------------------
+    # Repo settings
+    # ---------------------
+    repo_url: "https://github.com/hailocs/hailo-apps-internal.git"
+    repo_dest: "/tmp/hailo-apps-internal"
+    branch: "main"
+
+    # ---------------------
+    # Test selection from CI
+    # Passed directly to run_tests.sh
+    # ---------------------
+    test_type: ""
+
+    # ---------------------
+    # Resource URLs / versions
+    # ---------------------
     base_url: "https://dev-public.hailo.ai/2025_10/Hailo8"
     download_path: "/tmp/hailo_pkgs"
 
     hrt_ver: "4.23.0"
     tappas_ver: "5.1.0"
-
-    repo_url: "https://github.com/hailocs/hailo-apps-internal.git"
-    repo_dest: "/tmp/hailo-apps-internal"
-    branch: "main"
-    test_type: ""
 
     hailo_wheels:
       "3.10": "hailort-{{ hrt_ver }}-cp310-cp310-linux_x86_64.whl"
@@ -21,8 +40,16 @@
       "3.12": "hailort-{{ hrt_ver }}-cp312-cp312-linux_x86_64.whl"
       "3.13": "hailort-{{ hrt_ver }}-cp313-cp313-linux_x86_64.whl"
 
+    # Map Ubuntu major version → tappas suffix
+    tappas_suffix_map:
+      "22": "ub22"
+      "24": "ub24"
+
   pre_tasks:
 
+    # ---------------------------------------------------
+    # Diagnostics
+    # ---------------------------------------------------
     - name: Register kernel version
       ansible.builtin.command: uname -r
       register: kernel_ver
@@ -43,28 +70,66 @@
         filter: "ansible_python"
 
     - name: Set Python version variable
-      set_fact:
+      ansible.builtin.set_fact:
         py_ver: "{{ ansible_python.version.major }}.{{ ansible_python.version.minor }}"
 
+    # ---------------------------------------------------
+    # Determine wheel file
+    # ---------------------------------------------------
     - name: Determine correct wheel file
-      set_fact:
+      ansible.builtin.set_fact:
         target_whl: "{{ hailo_wheels[py_ver] | default(None) }}"
       failed_when: target_whl is none
 
+    # ---------------------------------------------------
+    # Determine tappas-core package name (Ubuntu only)
+    # ---------------------------------------------------
+    - name: Determine tappas-core suffix for Ubuntu
+      ansible.builtin.set_fact:
+        tappas_suffix: "{{ tappas_suffix_map[ansible_distribution_major_version] | default(None) }}"
+      when: ansible_distribution == "Ubuntu"
+
+    - name: Fail if Ubuntu version is unsupported for tappas-core
+      ansible.builtin.fail:
+        msg: >-
+          Unsupported Ubuntu major version '{{ ansible_distribution_major_version }}' for tappas-core.
+          Supported: {{ tappas_suffix_map.keys() | list }}.
+      when:
+        - ansible_distribution == "Ubuntu"
+        - tappas_suffix is not defined or tappas_suffix is none
+
+    - name: Build tappas-core filename on Ubuntu
+      ansible.builtin.set_fact:
+        tappas_core_pkg: "hailo-tappas-core_{{ tappas_ver }}_amd64_{{ tappas_suffix }}.deb"
+      when: ansible_distribution == "Ubuntu"
+
+    # ---------------------------------------------------
+    # Map download_resources → CLI flag
+    # ---------------------------------------------------
+    - name: Map download_resources to flag
+      ansible.builtin.set_fact:
+        download_flag: "{% if not download_resources %}--no-download{% else %}{% endif %}"
+
+    # ---------------------------------------------------
+    # System summary
+    # ---------------------------------------------------
     - name: Summary of system info
-      debug:
+      ansible.builtin.debug:
         msg:
           - "Kernel: {{ kernel_ver.stdout }}"
           - "Python: {{ py_ver }}"
-          - "OS version line: {{ os_ver.stdout }}"
+          - "OS: {{ os_ver.stdout }}"
           - "Uptime: {{ uptime_out.stdout }}"
+          - "Download resources: {{ download_resources }}"
+          - "Download flag: '{{ download_flag }}'"
+          - "Target wheel: {{ target_whl }}"
+          - "tappas-core pkg (Ubuntu only): {{ tappas_core_pkg | default('N/A') }}"
 
   tasks:
 
-    # --------------------------------------------------
-    # OS Upgrades / Updates
-    # --------------------------------------------------
-
+    # ---------------------------------------------------
+    # System dependencies
+    # ---------------------------------------------------
     - name: Update apt cache (Debian/Ubuntu)
       ansible.builtin.apt:
         update_cache: yes
@@ -83,12 +148,8 @@
         autoremove: yes
       when: ansible_os_family == "Debian"
 
-    # --------------------------------------------------
-    # Dependencies
-    # --------------------------------------------------
-
     - name: Install dependencies
-      package:
+      ansible.builtin.package:
         name:
           - curl
           - git
@@ -98,45 +159,59 @@
         state: present
 
     - name: Ensure temp download directory exists
-      file:
+      ansible.builtin.file:
         path: "{{ download_path }}"
         state: directory
         mode: '0755'
 
-    # --------------------------------------------------
-    # Download & Install Hailo Packages
-    # --------------------------------------------------
+    # ---------------------------------------------------
+    # Download Hailo deb and wheel files
+    # ---------------------------------------------------
+    - name: Download Hailo wheel (Python)
+      ansible.builtin.get_url:
+        url: "{{ base_url }}/{{ target_whl }}"
+        dest: "{{ download_path }}/{{ target_whl }}"
 
-    - name: Download Hailo deb and wheel files
-      get_url:
-        url: "{{ base_url }}/{{ item }}"
-        dest: "{{ download_path }}/{{ item }}"
-      loop:
-        - "{{ target_whl }}"
-        - "hailort_{{ hrt_ver }}_amd64.deb"
-        - "hailo-tappas-core_{{ tappas_ver }}_amd64.deb"
-        - "hailort-pcie-driver_{{ hrt_ver }}_all.deb"
+    - name: Download Hailo PCIe driver (.deb)
+      ansible.builtin.get_url:
+        url: "{{ base_url }}/hailort-pcie-driver_{{ hrt_ver }}_all.deb"
+        dest: "{{ download_path }}/hailort-pcie-driver_{{ hrt_ver }}_all.deb"
+      when: ansible_os_family == "Debian"
 
-    - name: Install .deb packages
-      apt:
+    - name: Download Hailo runtime (.deb)
+      ansible.builtin.get_url:
+        url: "{{ base_url }}/hailort_{{ hrt_ver }}_amd64.deb"
+        dest: "{{ download_path }}/hailort_{{ hrt_ver }}_amd64.deb"
+      when: ansible_os_family == "Debian"
+
+    - name: Download tappas-core (.deb) for Ubuntu
+      ansible.builtin.get_url:
+        url: "{{ base_url }}/{{ tappas_core_pkg }}"
+        dest: "{{ download_path }}/{{ tappas_core_pkg }}"
+      when: ansible_distribution == "Ubuntu"
+
+    # ---------------------------------------------------
+    # Install Hailo packages (Debian/Ubuntu)
+    # ---------------------------------------------------
+    - name: Install .deb packages (order matters)
+      ansible.builtin.apt:
         deb: "{{ download_path }}/{{ item }}"
         state: present
       loop:
         - "hailort-pcie-driver_{{ hrt_ver }}_all.deb"
         - "hailort_{{ hrt_ver }}_amd64.deb"
-        - "hailo-tappas-core_{{ tappas_ver }}_amd64.deb"
+        - "{{ tappas_core_pkg | default(omit) }}"
       when: ansible_os_family == "Debian"
 
     - name: Install Python wheel
-      pip:
+      ansible.builtin.pip:
         name: "{{ download_path }}/{{ target_whl }}"
         state: present
         executable: pip3
 
-    # --------------------------------------------------
+    # ---------------------------------------------------
     # Clone + Install hailo-apps-internal
-    # --------------------------------------------------
-
+    # ---------------------------------------------------
     - name: Clone hailo-apps-internal
       ansible.builtin.git:
         repo: "{{ repo_url }}"
@@ -151,14 +226,15 @@
       args:
         executable: /bin/bash
 
-    # --------------------------------------------------
-    # Tests
-    # --------------------------------------------------
-
-    - name: Run sanity tests
+    # ---------------------------------------------------
+    # Run tests
+    # ---------------------------------------------------
+    - name: Run tests (async)
       ansible.builtin.shell: |
         cd {{ repo_dest }}
         source venv_hailo_apps/bin/activate
-        ./run_tests.sh {{ test_type }}
+        ./run_tests.sh {{ test_type }} {{ download_flag }}
       args:
         executable: /bin/bash
+      async: 7200
+      poll: 30
