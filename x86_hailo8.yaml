@@ -13,7 +13,7 @@
     repo_url: "https://github.com/hailocs/hailo-apps-internal.git"
     repo_dest: "/tmp/hailo-apps-internal"
     branch: "main"
-    test_arg: ""
+    test_type: ""
 
     hailo_wheels:
       "3.10": "hailort-{{ hrt_ver }}-cp310-cp310-linux_x86_64.whl"
@@ -50,8 +50,6 @@
       set_fact:
         target_whl: "{{ hailo_wheels[py_ver] | default(None) }}"
       failed_when: target_whl is none
-      vars:
-        ansible_facts: "{{ ansible_facts }}"
 
     - name: Summary of system info
       debug:
@@ -161,6 +159,6 @@
       ansible.builtin.shell: |
         cd {{ repo_dest }}
         source venv_hailo_apps/bin/activate
-        ./run_tests.sh {{ test_arg }}
+        ./run_tests.sh {{ test_type }}
       args:
         executable: /bin/bash
