@@ -100,6 +100,6 @@
       ansible.builtin.shell: |
         cd {{ repo_dest }}
         source venv_hailo_apps/bin/activate
-        ./run_tests.sh {{ test_arg }}
+        ./run_tests.sh --pipelines
       args:
         executable: /bin/bash
