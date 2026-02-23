@@ -126,12 +126,13 @@
     # ---------------------------------------------------
     # Set MODEL_ZOO_ROOT for HEF resource downloads
     # ---------------------------------------------------
+
     - name: Configure MODEL_ZOO_ROOT for Hailo apps
       become_user: "{{ run_user }}"
-      ansible.builtin.shell: |
-        export MODEL_ZOO_ROOT="$HOME/.cache/hailo"
+      shell: |
+        MODEL_ZOO_ROOT="/home/{{ run_user }}/.cache/hailo"
         mkdir -p "$MODEL_ZOO_ROOT"
-        echo 'export MODEL_ZOO_ROOT="$HOME/.cache/hailo"' >> ~/.bashrc
+        echo 'export MODEL_ZOO_ROOT="/home/{{ run_user }}/.cache/hailo"' >> /home/{{ run_user }}/.bashrc
       args:
         executable: /bin/bash
 
