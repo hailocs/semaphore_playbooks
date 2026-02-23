@@ -153,10 +153,11 @@
     - name: Run tests as run_user (async)
       become_user: "{{ run_user }}"
       shell: |
-	cd {{ repo_dest }}
-	source venv_hailo_apps/bin/activate
+        cd {{ repo_dest }}
+        source venv_hailo_apps/bin/activate
         ./run_tests.sh {{ test_flag }} {{ download_flag }}
       args:
-	executable: /bin/bash
+        executable: /bin/bash
       async: 7200
       poll: 30
+
