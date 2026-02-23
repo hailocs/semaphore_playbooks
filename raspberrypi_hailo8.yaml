@@ -150,11 +150,11 @@
     # ---------------------------------------------------
     # Run tests
     # ---------------------------------------------------
-    - name: Run tests as run_user
+    - name: Run tests in background
       become_user: "{{ run_user }}"
-      ansible.builtin.shell: |
+      shell: |
         cd {{ repo_dest }}
         source venv_hailo_apps/bin/activate
-        ./run_tests.sh{{ " " + test_flag if test_flag | length > 0 else "" }}{{ " " + download_flag if download_flag | length > 0 else "" }}
+        nohup ./run_tests.sh {{ test_flag }} {{ download_flag }} > test.log 2>&1 &
       args:
         executable: /bin/bash
