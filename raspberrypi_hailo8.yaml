@@ -1,5 +1,5 @@
 ---
-- name: Basic Installation
+- name: Hailo-8 Raspberry Pi Installation & Test Runner
   hosts: all
   become: true
 
@@ -12,22 +12,34 @@
     branch: "main"
 
     # ---------------------
-    # Test selection from Semaphore:
-    #
+    # Test selection from Semaphore UI
     # Options:
-    #   sanity
-    #   install
-    #   pipelines
-    #   full    (default → run all tests)
+    #   - full
+    #   - sanity
+    #   - install
+    #   - pipelines
     # ---------------------
     test_type: "full"
 
-    # The user that will own all files & run install/tests
+    # ---------------------
+    # Resource downloading control
+    # Options:
+    #   - true  (default)
+    #   - false (adds --no-download)
+    # ---------------------
+    download_resources: true
+
+    # ---------------------
+    # User who will own repo, venv, and run tests
+    # Usually "semaphore" on Semaphore CI
+    # ---------------------
     run_user: "{{ ansible_user | default('semaphore') }}"
     run_group: "{{ ansible_user | default('semaphore') }}"
 
   pre_tasks:
-    # Verify we're running as root (Ansible's become)
+    # ---------------------------------------------------
+    # Diagnostics
+    # ---------------------------------------------------
     - name: Verify effective user (should be 0)
       ansible.builtin.command: id -u
       register: idu
@@ -37,15 +49,21 @@
       ansible.builtin.debug:
         msg: "Effective UID: {{ idu.stdout }}"
 
-    # Ensure test_type is valid
+    # ---------------------------------------------------
+    # Validate test_type
+    # ---------------------------------------------------
     - name: Validate test_type
       ansible.builtin.assert:
         that:
           - test_type in ['sanity', 'install', 'full', 'pipelines']
-        fail_msg: "Invalid test_type '{{ test_type }}'. Use sanity | install | full | pipelines."
+        fail_msg: >
+          Invalid test_type '{{ test_type }}'.
+          Must be one of: sanity | install | full | pipelines.
 
-    # Map UI test_type → script flags
-    - name: Map test_type to script flag
+    # ---------------------------------------------------
+    # Map test_type → CLI flag
+    # ---------------------------------------------------
+    - name: Map test_type to flag
       ansible.builtin.set_fact:
         test_flag: >-
           {% if test_type == 'sanity' %}--sanity
@@ -53,10 +71,17 @@
           {% elif test_type == 'pipelines' %}--pipelines
           {% else %}{% endif %}
 
+    # ---------------------------------------------------
+    # Map download_resources → CLI flag
+    # ---------------------------------------------------
+    - name: Map download_resources to flag
+      ansible.builtin.set_fact:
+        download_flag: "{% if not download_resources %}--no-download{% else %}{% endif %}"
+
   tasks:
-    # ---------------------
-    # System Dependencies
-    # ---------------------
+    # ---------------------------------------------------
+    # System dependencies
+    # ---------------------------------------------------
     - name: Update apt cache (Debian/Ubuntu)
       ansible.builtin.apt:
         update_cache: yes
@@ -80,9 +105,9 @@
           - python3-venv
         state: present
 
-    # ---------------------
-    # Clone repo as real user
-    # ---------------------
+    # ---------------------------------------------------
+    # Clone hailo-apps-internal repo as run_user
+    # ---------------------------------------------------
     - name: Clone hailo-apps-internal as run_user
       become_user: "{{ run_user }}"
       ansible.builtin.git:
@@ -91,7 +116,7 @@
         version: "{{ branch }}"
         force: yes
 
-    - name: Ensure repo directory ownership is correct
+    - name: Ensure repo directory ownership
       ansible.builtin.file:
         path: "{{ repo_dest }}"
         owner: "{{ run_user }}"
@@ -99,9 +124,9 @@
         recurse: true
         state: directory
 
-    # ---------------------
-    # Install hailo-apps
-    # ---------------------
+    # ---------------------------------------------------
+    # Run internal install script
+    # ---------------------------------------------------
     - name: Run installation script as run_user
       become_user: "{{ run_user }}"
       ansible.builtin.shell: |
@@ -110,14 +135,14 @@
       args:
         executable: /bin/bash
 
-    # ---------------------
+    # ---------------------------------------------------
     # Run tests
-    # ---------------------
+    # ---------------------------------------------------
     - name: Run tests as run_user
       become_user: "{{ run_user }}"
       ansible.builtin.shell: |
         cd {{ repo_dest }}
         source venv_hailo_apps/bin/activate
-        ./run_tests.sh{{ " " + test_flag if test_flag | length > 0 else "" }}
+        ./run_tests.sh{{ " " + test_flag if test_flag | length > 0 else "" }}{{ " " + download_flag if download_flag | length > 0 else "" }}
       args:
         executable: /bin/bash
