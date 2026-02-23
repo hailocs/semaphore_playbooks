@@ -1,3 +1,4 @@
+---
 - name: Hailo-8 x86 Installation & Test Runner
   hosts: all
   become: true
@@ -7,7 +8,8 @@
     # ---------------------
     # CI user that owns the repo and runs install/tests
     # ---------------------
-    run_user: "semaphore"
+    run_user: "{{ ansible_user | default('semaphore') }}"
+    run_group: "{{ ansible_user | default('semaphore') }}"
 
     # ---------------------
     # Resource downloading control
@@ -26,10 +28,14 @@
     venv_path: "{{ repo_dest }}/venv_hailo_apps"
 
     # ---------------------
-    # Test selection (passed to run_tests.sh)
-    # Examples: "", "--sanity", "--install", "--pipelines"
+    # Test selection from Semaphore UI (handled like RPi playbook)
+    # Options:
+    #   - full
+    #   - sanity
+    #   - install
+    #   - pipelines
     # ---------------------
-    test_type: ""
+    test_type: "full"
 
     # ---------------------
     # Resource URLs / versions
@@ -80,6 +86,39 @@
         py_ver: "{{ ansible_python.version.major }}.{{ ansible_python.version.minor }}"
 
     # ---------------------------------------------------
+    # Validate test_type (RPi-style)
+    # ---------------------------------------------------
+    - name: Validate test_type
+      ansible.builtin.assert:
+        that:
+          - test_type in ['sanity', 'install', 'full', 'pipelines']
+        fail_msg: >-
+          Invalid test_type '{{ test_type }}'. Must be one of:
+          sanity | install | full | pipelines.
+
+    # ---------------------------------------------------
+    # Map test_type → CLI flag (RPi-style)
+    #   - full => '' (no arg; run all)
+    #   - sanity => --sanity
+    #   - install => --install
+    #   - pipelines => --pipelines
+    # ---------------------------------------------------
+    - name: Map test_type to flag
+      ansible.builtin.set_fact:
+        test_flag: >-
+          {% if test_type == 'sanity' %}--sanity
+          {% elif test_type == 'install' %}--install
+          {% elif test_type == 'pipelines' %}--pipelines
+          {% else %}{% endif %}
+
+    # ---------------------------------------------------
+    # Map download_resources → CLI flag
+    # ---------------------------------------------------
+    - name: Map download_resources to flag
+      ansible.builtin.set_fact:
+        download_flag: "{% if not download_resources %}--no-download{% else %}{% endif %}"
+
+    # ---------------------------------------------------
     # Determine wheel file
     # ---------------------------------------------------
     - name: Determine correct wheel file
@@ -110,13 +149,6 @@
       when: ansible_distribution == "Ubuntu"
 
     # ---------------------------------------------------
-    # Map download_resources → CLI flag for run_tests.sh
-    # ---------------------------------------------------
-    - name: Map download_resources to flag
-      ansible.builtin.set_fact:
-        download_flag: "{% if not download_resources %}--no-download{% else %}{% endif %}"
-
-    # ---------------------------------------------------
     # System summary
     # ---------------------------------------------------
     - name: Summary of system info
@@ -131,6 +163,7 @@
           - "Target wheel: {{ target_whl }}"
           - "tappas-core pkg (Ubuntu only): {{ tappas_core_pkg | default('N/A') }}"
           - "Run user: {{ run_user }}"
+          - "Test type: '{{ test_type }}' → flag '{{ test_flag | default('') }}'"
 
   tasks:
 
@@ -205,7 +238,7 @@
         path: "{{ repo_dest | dirname }}"
         state: directory
         owner: "{{ run_user }}"
-        group: "{{ run_user }}"
+        group: "{{ run_group }}"
         mode: '0755'
 
     - name: Clone hailo-apps-internal as run_user
@@ -222,7 +255,7 @@
         state: directory
         recurse: true
         owner: "{{ run_user }}"
-        group: "{{ run_user }}"
+        group: "{{ run_group }}"
 
     # ---------------------------------------------------
     # Run install.sh as the CI user (creates venv_hailo_apps)
@@ -257,7 +290,7 @@
         executable: "{{ venv_path }}/bin/pip"
 
     # ---------------------------------------------------
-    # Run tests using the same venv and same user
+    # Run tests using the same venv and same user (RPi-style flags)
     # ---------------------------------------------------
     - name: Run tests (async) as run_user
       become_user: "{{ run_user }}"
@@ -265,7 +298,7 @@
         set -euo pipefail
         cd {{ repo_dest }}
         source "{{ venv_path }}/bin/activate"
-        ./run_tests.sh {{ test_type }} {{ download_flag }}
+        ./run_tests.sh {{ test_flag }} {{ download_flag }}
       args:
         executable: /bin/bash
       async: 7200

@@ -1,5 +1,5 @@
 ---
-- name: Hailo-8 Raspberry Pi Installation & Test Runner
+- name: Hailo-10h Raspberry Pi Installation & Test Runner
   hosts: all
   become: true
 
